@@ -3,7 +3,7 @@
 这是从原 hiAi 用户端流程中抽出的轻量独立项目。页面沿用原项目菜单、购物车和支付页的布局与暖米色视觉，只保留：
 
 1. 菜品分类与列表；
-2. 加入、增减和删除购物车菜品；
+2. 在点餐页购物车抽屉中加入、增减和删除菜品；
 3. 后端重新核算金额并生成支付确认预览；
 4. 支付方式界面展示。
 
@@ -34,10 +34,10 @@ macOS/Linux：
 sh ./build.sh
 ```
 
-产物：
+产物（每次打包生成独立时间目录，运行中的旧包不会影响再次打包）：
 
 ```text
-build/backend/hiai-menu-cart-checkout-1.0.0.jar
+build/packages/打包时间/hiai-menu-cart-checkout-1.0.0.jar
 ```
 
 ## 运行
@@ -49,8 +49,10 @@ build/backend/hiai-menu-cart-checkout-1.0.0.jar
 或者：
 
 ```sh
-java -jar build/backend/hiai-menu-cart-checkout-1.0.0.jar
+java -jar build/packages/打包时间/hiai-menu-cart-checkout-1.0.0.jar
 ```
+
+`run.ps1` 会自动读取 `build/latest.txt` 并运行最近一次生成的包。
 
 访问：<http://localhost:8080>
 

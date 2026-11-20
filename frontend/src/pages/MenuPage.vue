@@ -153,7 +153,7 @@ onMounted(loadMenu)
               </div>
             </article>
           </div>
-          <footer class="cart-popup-footer"><button class="cart-popup-checkout" @click="router.push('/cart')">确认菜品 · 去结算</button></footer>
+          <footer class="cart-popup-footer"><button class="cart-popup-checkout" @click="router.push('/checkout')">去结算</button></footer>
         </section>
       </div>
 
@@ -165,7 +165,7 @@ onMounted(loadMenu)
           <strong class="cart-total" :class="{ 'cart-total-zero': !state.cart.itemCount }">¥{{ state.cart.total.toFixed(2) }}</strong>
           <span class="cart-count">已选 {{ state.cart.itemCount }} 件</span>
         </div>
-        <button class="checkout-btn" :class="{ 'checkout-active': state.cart.itemCount }" :disabled="!state.cart.itemCount" @click="router.push('/cart')">去结算</button>
+        <button class="checkout-btn" :class="{ 'checkout-active': state.cart.itemCount }" :disabled="!state.cart.itemCount" @click="router.push('/checkout')">去结算</button>
       </footer>
     </template>
 

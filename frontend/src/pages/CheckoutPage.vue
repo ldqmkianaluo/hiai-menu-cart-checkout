@@ -35,7 +35,7 @@ onMounted(loadPreview)
 <template>
   <section class="pay-page">
     <header class="simple-nav pay-nav">
-      <router-link to="/cart" class="back-button" aria-label="返回确认菜品">‹</router-link>
+      <router-link to="/" class="back-button" aria-label="返回点餐">‹</router-link>
       <strong>支付订单</strong>
       <span></span>
     </header>
