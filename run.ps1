@@ -1,6 +1,6 @@
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
-$jar = Join-Path $projectRoot 'backend\target\hiai-menu-cart-checkout-1.0.0.jar'
+$jar = Join-Path $projectRoot 'build\backend\hiai-menu-cart-checkout-1.0.0.jar'
 if (-not (Test-Path -LiteralPath $jar)) {
     throw '尚未找到打包产物，请先执行 .\build.ps1'
 }

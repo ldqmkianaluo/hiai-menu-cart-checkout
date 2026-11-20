@@ -23,4 +23,4 @@ try {
     Pop-Location
 }
 
-Write-Host "打包完成：$projectRoot\backend\target\hiai-menu-cart-checkout-1.0.0.jar"
+Write-Host "打包完成：$projectRoot\build\backend\hiai-menu-cart-checkout-1.0.0.jar"

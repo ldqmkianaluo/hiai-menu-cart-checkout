@@ -1,6 +1,6 @@
 # hiAi 菜品—购物车—支付确认演示项目
 
-这是从原 hiAi 用户端流程中抽出的轻量独立项目，只保留：
+这是从原 hiAi 用户端流程中抽出的轻量独立项目。页面沿用原项目菜单、购物车和支付页的布局与暖米色视觉，只保留：
 
 1. 菜品分类与列表；
 2. 加入、增减和删除购物车菜品；
@@ -37,7 +37,7 @@ sh ./build.sh
 产物：
 
 ```text
-backend/target/hiai-menu-cart-checkout-1.0.0.jar
+build/backend/hiai-menu-cart-checkout-1.0.0.jar
 ```
 
 ## 运行
@@ -49,7 +49,7 @@ backend/target/hiai-menu-cart-checkout-1.0.0.jar
 或者：
 
 ```sh
-java -jar backend/target/hiai-menu-cart-checkout-1.0.0.jar
+java -jar build/backend/hiai-menu-cart-checkout-1.0.0.jar
 ```
 
 访问：<http://localhost:8080>

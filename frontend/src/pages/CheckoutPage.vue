@@ -1,7 +1,7 @@
 <script setup>
 import { onMounted, ref } from 'vue'
-import { useCart } from '../cart'
 import { api } from '../api'
+import { useCart } from '../cart'
 
 const { state } = useCart()
 const preview = ref(null)
@@ -9,6 +9,7 @@ const selectedMethod = ref('wechat_demo')
 const loading = ref(true)
 const error = ref('')
 const demoEnded = ref(false)
+const itemsExpanded = ref(true)
 
 async function loadPreview() {
   loading.value = true
@@ -32,60 +33,52 @@ onMounted(loadPreview)
 </script>
 
 <template>
-  <section class="page checkout-page">
-    <div class="page-nav">
-      <router-link to="/cart" class="back-button" aria-label="返回购物车">‹</router-link>
-      <div><span class="eyebrow">CHECKOUT</span><h1>支付确认</h1></div>
-      <span class="safe-label">安全演示</span>
-    </div>
+  <section class="pay-page">
+    <header class="simple-nav pay-nav">
+      <router-link to="/cart" class="back-button" aria-label="返回确认菜品">‹</router-link>
+      <strong>支付订单</strong>
+      <span></span>
+    </header>
 
-    <div v-if="loading" class="state-card"><div class="loader"></div><p>正在核对订单金额…</p></div>
-    <div v-else-if="error" class="state-card">
-      <span class="state-icon">!</span><h2>无法生成结算预览</h2><p>{{ error }}</p>
-      <div class="inline-actions"><router-link to="/cart" class="secondary-button">返回购物车</router-link><button class="primary-button compact" @click="loadPreview">重试</button></div>
-    </div>
-
-    <div v-else-if="demoEnded" class="state-card success-card">
-      <span class="success-check">✓</span>
-      <span class="eyebrow">DEMO COMPLETE</span>
-      <h2>演示流程到这里结束</h2>
-      <p>没有创建真实支付单，也没有调用微信、余额或银行卡接口。</p>
-      <router-link to="/" class="primary-button compact">返回菜品列表</router-link>
-    </div>
+    <div v-if="loading" class="full-state"><div class="loader"></div><p>正在核对订单金额…</p></div>
+    <div v-else-if="error" class="empty-card"><div class="state-sign">!</div><h1>暂时无法结算</h1><p>{{ error }}</p><button class="plain-primary" @click="loadPreview">重新加载</button></div>
+    <div v-else-if="demoEnded" class="empty-card demo-complete"><div class="state-sign success">✓</div><h1>流程演示到这里结束</h1><p>没有创建真实支付单，也没有调用微信或其他扣款接口。</p><router-link to="/" class="plain-primary">返回点餐</router-link></div>
 
     <template v-else-if="preview">
-      <div class="amount-card">
-        <span>本次应付</span>
-        <strong><small>¥</small>{{ preview.total.toFixed(2) }}</strong>
-        <p>预览号 {{ preview.previewNo }}</p>
-      </div>
+      <section class="pay-amount-card">
+        <span class="pay-amount-label">本次待付</span>
+        <div class="pay-amount-value"><span>¥</span>{{ preview.total.toFixed(2) }}</div>
+        <span class="pay-amount-context">共 {{ preview.itemCount }} 件菜品</span>
+      </section>
 
-      <div class="checkout-card">
-        <div class="card-heading"><h2>订单明细</h2><span>{{ preview.itemCount }} 件</span></div>
-        <div v-for="item in preview.items" :key="item.dishId" class="checkout-line">
-          <span>{{ item.name }} × {{ item.quantity }}</span><strong>¥{{ item.lineTotal.toFixed(2) }}</strong>
+      <section class="demo-boundary"><span>演示环境</span><p>页面保留至付款确认，不会发起真实交易。</p></section>
+
+      <section class="items-card">
+        <header class="items-hd"><strong>本次结账菜品</strong><span>共 {{ preview.itemCount }} 件</span></header>
+        <template v-if="itemsExpanded">
+          <div v-for="item in preview.items" :key="item.dishId" class="items-row">
+            <span class="items-name">{{ item.name }}</span><span class="items-qty">×{{ item.quantity }}</span><strong>¥{{ item.lineTotal.toFixed(2) }}</strong>
+          </div>
+        </template>
+        <button class="items-toggle" @click="itemsExpanded = !itemsExpanded">{{ itemsExpanded ? '收起菜品明细' : '查看菜品明细' }} <span>{{ itemsExpanded ? '⌃' : '⌄' }}</span></button>
+      </section>
+
+      <section class="payment-methods">
+        <header class="payment-section-head"><div><strong>支付方式</strong><span>请选择本次支付方式</span></div></header>
+        <div class="payment-options">
+          <label v-for="method in preview.paymentMethods" :key="method.code" class="method-select">
+            <span class="method-icon" :class="{ wechat: method.code === 'wechat_demo' }">{{ method.code === 'wechat_demo' ? '微' : '店' }}</span>
+            <span class="method-copy"><strong>{{ method.label }}</strong><small>{{ method.description }}</small></span>
+            <input v-model="selectedMethod" :value="method.code" type="radio" />
+            <i class="selection-indicator" :class="{ selected: selectedMethod === method.code }">✓</i>
+          </label>
         </div>
-      </div>
+      </section>
 
-      <div class="checkout-card">
-        <div class="card-heading"><h2>支付方式</h2><span>仅界面演示</span></div>
-        <label v-for="method in preview.paymentMethods" :key="method.code" class="payment-method">
-          <span class="payment-logo">{{ method.icon }}</span>
-          <span><strong>{{ method.label }}</strong><small>{{ method.description }}</small></span>
-          <input v-model="selectedMethod" type="radio" :value="method.code" />
-          <i></i>
-        </label>
-      </div>
-
-      <div class="demo-notice">
-        <strong>演示边界</strong>
-        <p>点击下方按钮后只展示结束提示，不会创建交易、扣款或改变订单状态。</p>
-      </div>
-
-      <div class="bottom-action checkout-action">
-        <div><small>确认金额</small><strong>¥{{ preview.total.toFixed(2) }}</strong></div>
-        <button class="primary-button" @click="finishDemo">确认信息（演示到此）</button>
-      </div>
+      <footer class="pay-footer">
+        <div class="footer-total"><span>本次合计</span><strong>¥{{ preview.total.toFixed(2) }}</strong></div>
+        <button class="pay-btn" @click="finishDemo">确认支付 ¥{{ preview.total.toFixed(2) }}</button>
+      </footer>
     </template>
   </section>
 </template>
