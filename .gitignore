@@ -1,0 +1,15 @@
+frontend/node_modules/
+frontend/dist/
+backend/target/
+.idea/
+.vscode/
+*.iml
+*.log
+.DS_Store
+Thumbs.db
+
+# Local-only configuration and credentials
+.env
+.env.*
+!.env.example
+application-local.yml
