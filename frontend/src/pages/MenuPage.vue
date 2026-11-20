@@ -12,6 +12,7 @@ const searchKeyword = ref('')
 const loading = ref(true)
 const error = ref('')
 const cartOpen = ref(false)
+const selectedDishIds = ref([])
 
 const categoryIcons = { signature: '荐', hot: '热', staple: '食', drink: '饮' }
 const filteredDishes = computed(() => {
@@ -23,6 +24,10 @@ const filteredDishes = computed(() => {
 })
 const categoryDishes = categoryId => filteredDishes.value.filter(dish => dish.categoryId === categoryId)
 const activeDishes = computed(() => categoryDishes(activeCategory.value))
+const selectedItems = computed(() => state.cart.items.filter(item => selectedDishIds.value.includes(item.dishId)))
+const selectedItemCount = computed(() => selectedItems.value.reduce((sum, item) => sum + item.quantity, 0))
+const selectedTotal = computed(() => selectedItems.value.reduce((sum, item) => sum + item.lineTotal, 0))
+const allSelected = computed(() => state.cart.items.length > 0 && selectedItems.value.length === state.cart.items.length)
 
 async function loadMenu() {
   loading.value = true
@@ -38,18 +43,41 @@ async function loadMenu() {
 }
 
 async function change(dishId, delta) {
+  const nextQuantity = quantityOf(dishId) + delta
   try {
-    await setQuantity(dishId, quantityOf(dishId) + delta)
+    await setQuantity(dishId, nextQuantity)
+    if (nextQuantity <= 0) selectedDishIds.value = selectedDishIds.value.filter(id => id !== dishId)
   } catch (_) {}
 }
 
-async function clearCart() {
-  for (const item of [...state.cart.items]) await setQuantity(item.dishId, 0)
-  cartOpen.value = false
+async function removeDish(dishId) {
+  try {
+    await setQuantity(dishId, 0)
+    selectedDishIds.value = selectedDishIds.value.filter(id => id !== dishId)
+    if (!state.cart.items.length) cartOpen.value = false
+  } catch (_) {}
 }
 
 function openCart() {
-  if (state.cart.itemCount) cartOpen.value = true
+  if (!state.cart.itemCount) return
+  selectedDishIds.value = state.cart.items.map(item => item.dishId)
+  cartOpen.value = true
+}
+
+function toggleSelected(dishId) {
+  selectedDishIds.value = selectedDishIds.value.includes(dishId)
+    ? selectedDishIds.value.filter(id => id !== dishId)
+    : [...selectedDishIds.value, dishId]
+}
+
+function toggleAllSelected() {
+  selectedDishIds.value = allSelected.value ? [] : state.cart.items.map(item => item.dishId)
+}
+
+function checkoutSelected() {
+  if (!selectedDishIds.value.length) return
+  sessionStorage.setItem('hiai-demo-selected-dish-ids', JSON.stringify(selectedDishIds.value))
+  router.push('/checkout')
 }
 
 onMounted(loadMenu)
@@ -138,22 +166,50 @@ onMounted(loadMenu)
       </div>
 
       <div v-if="cartOpen" class="cart-mask" @click.self="cartOpen = false">
-        <section class="cart-sheet" role="dialog" aria-label="购物车">
-          <header class="cart-popup-hd">
-            <span class="cart-popup-icon">🧺</span>
-            <div class="cart-popup-title"><strong class="cart-popup-total">¥{{ state.cart.total.toFixed(2) }}</strong><span class="cart-popup-count">共 {{ state.cart.itemCount }} 件</span></div>
-            <button class="cart-popup-clear" @click="clearCart">清空</button>
+        <section class="sc-sheet" role="dialog" aria-label="购物车">
+          <header class="sc-hd">
+            <div class="sc-title-row">
+              <strong class="sc-title">购物车</strong>
+              <span class="sc-sub">{{ state.cart.itemCount }} 件待提交</span>
+            </div>
+            <button class="sc-close" aria-label="关闭购物车" @click="cartOpen = false">×</button>
           </header>
-          <div class="cart-popup-body">
-            <article v-for="item in state.cart.items" :key="item.dishId" class="cart-row">
-              <div class="cart-row-img" :style="{ background: item.artColor }">{{ item.icon }}</div>
-              <div class="cart-row-meta"><strong>{{ item.name }}</strong><span>¥{{ item.price.toFixed(2) }}</span></div>
-              <div class="cart-row-qty">
-                <button class="cart-qty-btn minus" @click="change(item.dishId, -1)">−</button><b>{{ item.quantity }}</b><button class="cart-qty-btn plus" @click="change(item.dishId, 1)">＋</button>
+          <div class="sc-body">
+            <div class="sc-group">
+              <div class="sc-group-hd">
+                <div class="sc-who"><span class="sc-who-avatar">我</span><span class="sc-group-label mine">我点的</span></div>
+                <span class="sc-group-meta">{{ state.cart.items.length }} 项</span>
               </div>
+            <article v-for="item in state.cart.items" :key="item.dishId" class="sc-row" @click="toggleSelected(item.dishId)">
+              <button class="sc-check" :class="{ on: selectedDishIds.includes(item.dishId) }" :aria-label="selectedDishIds.includes(item.dishId) ? '取消选择' + item.name : '选择' + item.name">
+                <span v-if="selectedDishIds.includes(item.dishId)">✓</span>
+              </button>
+              <div class="sc-meta">
+                <strong class="sc-name">{{ item.name }}</strong>
+                <span class="sc-qty">×{{ item.quantity }}</span>
+                <span class="sc-unit-price">单价 ¥{{ item.price.toFixed(2) }}</span>
+                <strong class="sc-line-amount">小计 ¥{{ item.lineTotal.toFixed(2) }}</strong>
+              </div>
+              <div class="sc-ops" @click.stop>
+                <button class="sc-qty-btn" :disabled="state.updating" :aria-label="'减少' + item.name" @click="change(item.dishId, -1)">−</button>
+                <span class="sc-qty-num">{{ item.quantity }}</span>
+                <button class="sc-qty-btn" :disabled="state.updating" :aria-label="'增加' + item.name" @click="change(item.dishId, 1)">＋</button>
+              </div>
+              <button class="sc-del" :disabled="state.updating" :aria-label="'移除' + item.name" @click.stop="removeDish(item.dishId)">×</button>
             </article>
+            </div>
           </div>
-          <footer class="cart-popup-footer"><button class="cart-popup-checkout" @click="router.push('/checkout')">去结算</button></footer>
+          <div class="sc-summary">
+            <div class="sc-summary-row"><strong>合计待支付</strong><strong class="sc-summary-amount">¥{{ selectedTotal.toFixed(2) }}</strong></div>
+            <span class="sc-price-hint">优惠及应付金额以下单时为准</span>
+          </div>
+          <footer class="sc-ft">
+            <div class="sc-ft-left">
+              <button class="sc-sel" @click="toggleAllSelected">{{ allSelected ? '取消全选' : '全选新菜' }}</button>
+              <span class="sc-sel-count">{{ selectedDishIds.length ? `已选 ${selectedDishIds.length} 项，共 ${selectedItemCount} 件` : '请选择要提交的菜品' }}</span>
+            </div>
+            <button class="sc-submit" :disabled="!selectedDishIds.length" @click="checkoutSelected">去支付</button>
+          </footer>
         </section>
       </div>
 
@@ -165,7 +221,7 @@ onMounted(loadMenu)
           <strong class="cart-total" :class="{ 'cart-total-zero': !state.cart.itemCount }">¥{{ state.cart.total.toFixed(2) }}</strong>
           <span class="cart-count">已选 {{ state.cart.itemCount }} 件</span>
         </div>
-        <button class="checkout-btn" :class="{ 'checkout-active': state.cart.itemCount }" :disabled="!state.cart.itemCount" @click="router.push('/checkout')">去结算</button>
+        <button class="checkout-btn" :class="{ 'checkout-active': state.cart.itemCount }" :disabled="!state.cart.itemCount" @click="openCart">去结算</button>
       </footer>
     </template>
 

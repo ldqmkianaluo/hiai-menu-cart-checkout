@@ -21,8 +21,8 @@ export const api = {
     method: 'POST',
     body: JSON.stringify(payload),
   }),
-  checkoutPreview: sessionId => request('/api/demo/checkout/preview', {
+  checkoutPreview: (sessionId, dishIds = []) => request('/api/demo/checkout/preview', {
     method: 'POST',
-    body: JSON.stringify({ sessionId }),
+    body: JSON.stringify({ sessionId, dishIds }),
   }),
 }

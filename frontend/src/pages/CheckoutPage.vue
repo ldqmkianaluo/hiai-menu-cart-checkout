@@ -15,7 +15,8 @@ async function loadPreview() {
   loading.value = true
   error.value = ''
   try {
-    preview.value = await api.checkoutPreview(state.sessionId)
+    const selectedDishIds = JSON.parse(sessionStorage.getItem('hiai-demo-selected-dish-ids') || '[]')
+    preview.value = await api.checkoutPreview(state.sessionId, selectedDishIds)
     selectedMethod.value = preview.value.paymentMethods[0]?.code || ''
   } catch (err) {
     error.value = err.message

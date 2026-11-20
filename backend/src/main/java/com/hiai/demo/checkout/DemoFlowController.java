@@ -18,6 +18,7 @@ import org.springframework.web.bind.annotation.RestController;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 @RestController
 @RequestMapping("/api/demo")
@@ -52,14 +53,25 @@ class DemoFlowController {
     @PostMapping("/checkout/preview")
     CheckoutPreview checkoutPreview(@Valid @RequestBody CheckoutCommand command) {
         DemoCartService.CartView cart = carts.get(command.sessionId());
-        if (cart.items().isEmpty()) {
+        List<DemoCartService.CartLine> selectedItems = cart.items();
+        if (command.dishIds() != null && !command.dishIds().isEmpty()) {
+            Set<String> selectedIds = Set.copyOf(command.dishIds());
+            selectedItems = cart.items().stream()
+                    .filter(item -> selectedIds.contains(item.dishId()))
+                    .toList();
+        }
+        if (selectedItems.isEmpty()) {
             throw new IllegalArgumentException("购物车为空，暂时无法生成结算预览");
         }
+        int selectedCount = selectedItems.stream().mapToInt(DemoCartService.CartLine::quantity).sum();
+        java.math.BigDecimal selectedTotal = selectedItems.stream()
+                .map(DemoCartService.CartLine::lineTotal)
+                .reduce(java.math.BigDecimal.ZERO, java.math.BigDecimal::add);
         String suffix = command.sessionId().replaceAll("[^A-Za-z0-9]", "");
         suffix = suffix.substring(Math.max(0, suffix.length() - 6));
         return new CheckoutPreview(
                 "DEMO-" + suffix.toUpperCase() + "-" + Instant.now().getEpochSecond(),
-                cart.items(), cart.itemCount(), cart.total(),
+                selectedItems, selectedCount, selectedTotal,
                 List.of(
                         new PaymentMethod("wechat_demo", "微信支付", "仅展示，不会唤起微信支付", "微"),
                         new PaymentMethod("counter_demo", "到店付款", "仅展示，不会创建收款任务", "店")
@@ -83,7 +95,8 @@ class DemoFlowController {
                        @NotBlank(message = "缺少菜品标识") String dishId,
                        @Min(value = 0, message = "数量不能小于 0")
                        @Max(value = 99, message = "数量不能大于 99") int quantity) {}
-    record CheckoutCommand(@NotBlank(message = "缺少会话标识") String sessionId) {}
+    record CheckoutCommand(@NotBlank(message = "缺少会话标识") String sessionId,
+                           List<String> dishIds) {}
     record PaymentMethod(String code, String label, String description, String icon) {}
     record CheckoutPreview(String previewNo, List<DemoCartService.CartLine> items, int itemCount,
                            java.math.BigDecimal total, List<PaymentMethod> paymentMethods, boolean demoOnly) {}
