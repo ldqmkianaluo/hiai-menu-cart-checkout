@@ -5,8 +5,11 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:full": "node dev.mjs",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "mock": "node mock-server.mjs",
+    "test:cart": "node cart.smoke.test.mjs"
   },
   "dependencies": {
     "vue": "^3.5.13",

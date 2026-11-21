@@ -1,11 +1,11 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { api } from '../api'
 import { useCart } from '../cart'
 
 const router = useRouter()
-const { state, setQuantity, quantityOf } = useCart()
+const { state, setQuantity, quantityOf, isPending, refresh } = useCart()
 const menu = ref(null)
 const activeCategory = ref('')
 const searchKeyword = ref('')
@@ -14,7 +14,6 @@ const error = ref('')
 const cartOpen = ref(false)
 const selectedDishIds = ref([])
 
-const categoryIcons = { signature: '荐', hot: '热', staple: '食', drink: '饮' }
 const filteredDishes = computed(() => {
   const keyword = searchKeyword.value.trim()
   if (!menu.value) return []
@@ -22,12 +21,53 @@ const filteredDishes = computed(() => {
     ? menu.value.dishes.filter(dish => `${dish.name}${dish.description}`.includes(keyword))
     : menu.value.dishes
 })
-const categoryDishes = categoryId => filteredDishes.value.filter(dish => dish.categoryId === categoryId)
-const activeDishes = computed(() => categoryDishes(activeCategory.value))
+const activeDishes = computed(() => filteredDishes.value.filter(dish => dish.categoryId === activeCategory.value))
+const displayedDishes = computed(() => (searchKeyword.value.trim() ? filteredDishes.value : activeDishes.value))
+const currentCategoryName = computed(() => menu.value?.categories.find(item => item.id === activeCategory.value)?.name || '')
 const selectedItems = computed(() => state.cart.items.filter(item => selectedDishIds.value.includes(item.dishId)))
 const selectedItemCount = computed(() => selectedItems.value.reduce((sum, item) => sum + item.quantity, 0))
 const selectedTotal = computed(() => selectedItems.value.reduce((sum, item) => sum + item.lineTotal, 0))
 const allSelected = computed(() => state.cart.items.length > 0 && selectedItems.value.length === state.cart.items.length)
+
+// 购物车按人分组：我的一组在最前，同桌其他人只读展示。
+const cartGroups = computed(() => {
+  const groups = new Map()
+  for (const item of state.cart.items) {
+    const isMe = item.memberId === state.memberId
+    const group = groups.get(item.memberId) || {
+      id: item.memberId,
+      isMe,
+      label: isMe ? '我点的' : item.memberName,
+      avatar: isMe ? '我' : String(item.memberName || '桌').slice(0, 1),
+      items: [],
+      itemCount: 0,
+    }
+    group.items.push(item)
+    group.itemCount += item.quantity
+    groups.set(item.memberId, group)
+  }
+  return [...groups.values()].sort((a, b) => Number(b.isMe) - Number(a.isMe))
+})
+
+// 分类角标一次算好，避免每个分类在渲染时反复 filter + reduce。
+const dishCategory = computed(() => {
+  const map = {}
+  for (const dish of menu.value?.dishes || []) map[dish.id] = dish.categoryId
+  return map
+})
+const categoryCounts = computed(() => {
+  const counts = {}
+  for (const item of state.cart.items) {
+    const categoryId = dishCategory.value[item.dishId]
+    if (categoryId) counts[categoryId] = (counts[categoryId] || 0) + item.quantity
+  }
+  return counts
+})
+
+// 菜品被减到 0 后，勾选状态跟着失效。
+watch(() => state.cart.items.map(item => item.dishId), ids => {
+  selectedDishIds.value = selectedDishIds.value.filter(id => ids.includes(id))
+})
 
 async function loadMenu() {
   loading.value = true
@@ -42,30 +82,43 @@ async function loadMenu() {
   }
 }
 
-async function change(dishId, delta) {
-  const nextQuantity = quantityOf(dishId) + delta
+async function change(dish, delta) {
+  const dishId = dish.id ?? dish.dishId
+  const next = quantityOf(dishId) + delta
+  if (next > 0 && !selectedDishIds.value.includes(dishId)) {
+    selectedDishIds.value = [...selectedDishIds.value, dishId]
+  }
   try {
-    await setQuantity(dishId, nextQuantity)
-    if (nextQuantity <= 0) selectedDishIds.value = selectedDishIds.value.filter(id => id !== dishId)
-  } catch (_) {}
+    await setQuantity(dish, next)
+    if (next <= 0) selectedDishIds.value = selectedDishIds.value.filter(id => id !== dishId)
+  } catch {
+    // 本地数量已回滚，提示由顶部全局错误条给出。
+  }
 }
 
-async function removeDish(dishId) {
+async function removeDish(item) {
   try {
-    await setQuantity(dishId, 0)
-    selectedDishIds.value = selectedDishIds.value.filter(id => id !== dishId)
+    await setQuantity(item, 0)
+    selectedDishIds.value = selectedDishIds.value.filter(id => id !== item.dishId)
     if (!state.cart.items.length) cartOpen.value = false
-  } catch (_) {}
+  } catch {
+    // 同上。
+  }
+}
+
+function selectCategory(categoryId) {
+  activeCategory.value = categoryId
+  searchKeyword.value = ''
 }
 
 function openCart() {
   if (!state.cart.itemCount) return
-  selectedDishIds.value = state.cart.items.map(item => item.dishId)
+  const ids = state.cart.items.map(item => item.dishId)
+  selectedDishIds.value = selectedDishIds.value.filter(id => ids.includes(id))
   cartOpen.value = true
 }
 
-function toggleSelected(dishId) {
-  selectedDishIds.value = selectedDishIds.value.includes(dishId)
+function toggleSelected(dishId) {  selectedDishIds.value = selectedDishIds.value.includes(dishId)
     ? selectedDishIds.value.filter(id => id !== dishId)
     : [...selectedDishIds.value, dishId]
 }
@@ -81,89 +134,111 @@ function checkoutSelected() {
 }
 
 onMounted(loadMenu)
+
+// 同桌共享：每 3 秒同步一次，回到页面前台时立刻同步。
+let pollTimer = null
+function syncOnVisible() {
+  if (document.visibilityState === 'visible') refresh()
+}
+onMounted(() => {
+  pollTimer = setInterval(refresh, 3000)
+  document.addEventListener('visibilitychange', syncOnVisible)
+})
+onUnmounted(() => {
+  clearInterval(pollTimer)
+  document.removeEventListener('visibilitychange', syncOnVisible)
+})
 </script>
 
 <template>
-  <section class="menu-page oriental-menu">
+  <section class="menu-page">
     <template v-if="menu">
-      <header class="order-hero">
-        <div class="hero-store-card">
-          <div class="hero-logo placeholder">{{ menu.store.name.slice(0, 1) }}</div>
+      <header class="store-hero">
+        <p class="hero-kicker">HI·AI ORDER SYSTEM</p>
+        <div class="hero-store">
+          <div class="hero-logo">{{ menu.store.name.slice(0, 1) }}</div>
           <div class="hero-main">
-            <div class="hero-title-row">
-              <strong class="hero-name">{{ menu.store.name }}</strong>
-              <span class="hero-status">营业中</span>
-            </div>
-            <span class="hero-sub">2 人用餐 · 已点 {{ state.cart.itemCount }} 件</span>
+            <strong class="hero-name">{{ menu.store.name }}</strong>
+            <span class="hero-sub">{{ menu.store.notice }}</span>
           </div>
-          <button class="hero-seat-card" aria-label="当前桌号">
-            <span class="hero-seat-label">当前桌</span>
-            <strong class="hero-seat-no">A08</strong>
+          <div class="hero-seat">
+            <span class="hero-seat-label">桌号</span>
+            <strong class="hero-seat-no">{{ state.table }}</strong>
+          </div>
+        </div>
+        <div class="hero-meta">
+          <span class="hero-status">营业中</span>
+          <span class="hero-sep">·</span>
+          <span class="hero-meta-text">同桌 {{ state.cart.members.length }} 人 · 共 {{ state.cart.itemCount }} 件</span>
+        </div>
+        <div class="hero-entries">
+          <button type="button" class="hero-entry" @click="router.push('/lucky')">
+            <span class="hero-entry-kicker">PROMO</span>
+            <span class="hero-entry-label">抽奖打折</span>
+          </button>
+          <button type="button" class="hero-entry hero-entry-ghost" @click="router.push('/reserve')">
+            <span class="hero-entry-kicker">RESERVE</span>
+            <span class="hero-entry-label">预约留座</span>
+          </button>
+          <button type="button" class="hero-entry hero-entry-ghost" @click="router.push('/agent')">
+            <span class="hero-entry-kicker">AGENT</span>
+            <span class="hero-entry-label">智能点餐</span>
           </button>
         </div>
-
-        <div class="oriental-actions">
-          <button class="oriental-action"><span class="oriental-action-icon">铃</span><strong>呼叫服务</strong><small>加水 · 餐具 · 结账</small></button>
-          <button class="oriental-action ai"><span class="oriental-action-icon">AI</span><strong>问AI</strong><small>按口味帮你点菜</small></button>
-        </div>
-
         <label class="search-box">
           <span class="search-icon" aria-hidden="true"></span>
-          <input v-model="searchKeyword" class="search-input" placeholder="搜索菜品、套餐、口味" />
+          <input v-model="searchKeyword" class="search-input" placeholder="搜索菜品、口味" />
           <button v-if="searchKeyword" class="search-clear" @click="searchKeyword = ''" aria-label="清空搜索">×</button>
         </label>
       </header>
 
-      <div class="tab-bar"><span class="tab tab-on">点餐</span></div>
+      <nav class="cat-tabs" aria-label="菜品分类">
+        <button
+          v-for="category in menu.categories"
+          :key="category.id"
+          class="cat-tab"
+          :class="{ active: !searchKeyword.trim() && activeCategory === category.id }"
+          @click="selectCategory(category.id)"
+        >
+          <span class="cat-tab-name">{{ category.name }}</span>
+          <span v-if="categoryCounts[category.id]" class="cat-tab-badge">{{ categoryCounts[category.id] }}</span>
+        </button>
+      </nav>
 
-      <div class="menu-body">
-        <aside class="cats" aria-label="菜品分类">
-          <button
-            v-for="category in menu.categories"
-            :key="category.id"
-            class="cat-item"
-            :class="{ active: activeCategory === category.id }"
-            @click="activeCategory = category.id"
-          >
-            <span class="cat-icon">{{ categoryIcons[category.id] || '菜' }}</span>
-            <span class="cat-name">{{ category.name }}</span>
-            <span v-if="menu.dishes.filter(d => d.categoryId === category.id).reduce((sum, d) => sum + quantityOf(d.id), 0)" class="cat-badge">
-              {{ menu.dishes.filter(d => d.categoryId === category.id).reduce((sum, d) => sum + quantityOf(d.id), 0) }}
-            </span>
-          </button>
-        </aside>
+      <main class="dishes">
+        <div class="dish-list-head">
+          <strong>{{ searchKeyword.trim() ? '搜索结果' : currentCategoryName }}</strong>
+          <span>{{ displayedDishes.length }} 道</span>
+        </div>
 
-        <main class="dishes">
-          <div v-if="searchKeyword" class="cat-title">
-            <div class="cat-title-label"><span class="cat-title-icon">搜</span><strong>搜索结果</strong></div>
-            <span class="cat-count">{{ filteredDishes.length }} 道</span>
+        <p v-if="!displayedDishes.length" class="menu-empty">暂无相关菜品</p>
+
+        <article v-for="(dish, index) in displayedDishes" :key="dish.id" class="dish-card">
+          <div class="dish-thumb" :style="{ background: dish.artColor }">
+            <span class="dish-mark">{{ dish.name.slice(0, 1) }}</span>
+            <span class="dish-no">{{ String(index + 1).padStart(2, '0') }}</span>
           </div>
-          <div v-else class="cat-title">
-            <div class="cat-title-label"><span class="cat-title-icon">{{ categoryIcons[activeCategory] || '菜' }}</span><strong>{{ menu.categories.find(c => c.id === activeCategory)?.name }}</strong></div>
-            <span class="cat-count">{{ activeDishes.length }} 道</span>
-          </div>
-
-          <div v-if="!(searchKeyword ? filteredDishes : activeDishes).length" class="menu-empty">暂无相关菜品</div>
-          <article v-for="dish in (searchKeyword ? filteredDishes : activeDishes)" :key="dish.id" class="dish-card">
-            <div class="dish-img-wrap" :style="{ background: dish.artColor }">
-              <span class="dish-art">{{ dish.icon }}</span>
-              <span v-if="dish.tag" class="badge-corner-tl">{{ dish.tag }}</span>
+          <div class="dish-body">
+            <div class="dish-name-row">
+              <strong class="dish-name">{{ dish.name }}</strong>
+              <span v-if="dish.tag" class="dish-tag">{{ dish.tag }}</span>
             </div>
-            <div class="dish-name-row"><strong class="dish-name">{{ dish.name }}</strong></div>
-            <div class="dish-chip-row"><span class="dish-chip gold">月售 {{ 36 + Number(dish.id.slice(-1)) * 7 }}</span></div>
-            <p class="dish-selling-point">{{ dish.description }}</p>
+            <p class="dish-desc">{{ dish.description }}</p>
             <div class="dish-footer">
-              <strong class="dish-price">¥{{ dish.price.toFixed(2) }}</strong>
+              <strong class="dish-price"><small>¥</small>{{ dish.price.toFixed(2) }}</strong>
               <div class="qty-ctl">
-                <button v-if="quantityOf(dish.id)" class="qty-btn minus" :disabled="state.updating" @click="change(dish.id, -1)" aria-label="减少">−</button>
+                <button v-if="quantityOf(dish.id)" class="qty-btn minus" :aria-busy="isPending(dish.id)" @click="change(dish, -1)" aria-label="减少">−</button>
                 <span v-if="quantityOf(dish.id)" class="qty-num">{{ quantityOf(dish.id) }}</span>
-                <button class="qty-btn plus" :disabled="state.updating" @click="change(dish.id, 1)" aria-label="增加">＋</button>
+                <button class="qty-btn plus" :aria-busy="isPending(dish.id)" @click="change(dish, 1)" aria-label="增加">＋</button>
               </div>
             </div>
-          </article>
-          <div class="cart-safe-space"></div>
-        </main>
-      </div>
+          </div>
+        </article>
+        <p v-if="displayedDishes.length" class="menu-foot">
+          {{ searchKeyword.trim() ? '以上为搜索结果' : `以上为全部${currentCategoryName}菜品` }}
+        </p>
+        <div class="cart-safe-space"></div>
+      </main>
 
       <div v-if="cartOpen" class="cart-mask" @click.self="cartOpen = false">
         <section class="sc-sheet" role="dialog" aria-label="购物车">
@@ -175,28 +250,44 @@ onMounted(loadMenu)
             <button class="sc-close" aria-label="关闭购物车" @click="cartOpen = false">×</button>
           </header>
           <div class="sc-body">
-            <div class="sc-group">
+            <div v-for="group in cartGroups" :key="group.id" class="sc-group">
               <div class="sc-group-hd">
-                <div class="sc-who"><span class="sc-who-avatar">我</span><span class="sc-group-label mine">我点的</span></div>
-                <span class="sc-group-meta">{{ state.cart.items.length }} 项</span>
+                <div class="sc-who">
+                  <span class="sc-who-avatar" :class="{ other: !group.isMe }">{{ group.avatar }}</span>
+                  <span class="sc-group-label" :class="{ mine: group.isMe }">{{ group.label }}</span>
+                </div>
+                <span class="sc-group-meta">{{ group.itemCount }} 件</span>
               </div>
-            <article v-for="item in state.cart.items" :key="item.dishId" class="sc-row" @click="toggleSelected(item.dishId)">
-              <button class="sc-check" :class="{ on: selectedDishIds.includes(item.dishId) }" :aria-label="selectedDishIds.includes(item.dishId) ? '取消选择' + item.name : '选择' + item.name">
-                <span v-if="selectedDishIds.includes(item.dishId)">✓</span>
-              </button>
-              <div class="sc-meta">
-                <strong class="sc-name">{{ item.name }}</strong>
-                <span class="sc-qty">×{{ item.quantity }}</span>
-                <span class="sc-unit-price">单价 ¥{{ item.price.toFixed(2) }}</span>
-                <strong class="sc-line-amount">小计 ¥{{ item.lineTotal.toFixed(2) }}</strong>
-              </div>
-              <div class="sc-ops" @click.stop>
-                <button class="sc-qty-btn" :disabled="state.updating" :aria-label="'减少' + item.name" @click="change(item.dishId, -1)">−</button>
-                <span class="sc-qty-num">{{ item.quantity }}</span>
-                <button class="sc-qty-btn" :disabled="state.updating" :aria-label="'增加' + item.name" @click="change(item.dishId, 1)">＋</button>
-              </div>
-              <button class="sc-del" :disabled="state.updating" :aria-label="'移除' + item.name" @click.stop="removeDish(item.dishId)">×</button>
-            </article>
+              <article v-for="item in group.items" :key="item.memberId + item.dishId" class="sc-row">
+                <button
+                  class="sc-check"
+                  :class="{ on: selectedDishIds.includes(item.dishId) }"
+                  :aria-pressed="selectedDishIds.includes(item.dishId)"
+                  :aria-label="selectedDishIds.includes(item.dishId) ? '取消选择' + item.name : '选择' + item.name"
+                  @click="toggleSelected(item.dishId)"
+                >
+                  <span v-if="selectedDishIds.includes(item.dishId)">✓</span>
+                </button>
+                <div class="sc-meta">
+                  <strong class="sc-name">{{ item.name }}</strong>
+                  <span class="sc-unit-price">¥{{ item.price.toFixed(2) }} / 份</span>
+                  <strong class="sc-line-amount">小计 ¥{{ item.lineTotal.toFixed(2) }}</strong>
+                </div>
+                <div v-if="item.memberId === state.memberId" class="sc-ops" @click.stop>
+                  <button class="sc-qty-btn" :aria-busy="isPending(item.dishId)" :aria-label="'减少' + item.name" @click="change(item, -1)">−</button>
+                  <span class="sc-qty-num">{{ item.quantity }}</span>
+                  <button class="sc-qty-btn plus" :aria-busy="isPending(item.dishId)" :aria-label="'增加' + item.name" @click="change(item, 1)">＋</button>
+                </div>
+                <span v-else class="sc-qty-readonly">×{{ item.quantity }}</span>
+                <button
+                  v-if="item.memberId === state.memberId"
+                  class="sc-del"
+                  :aria-busy="isPending(item.dishId)"
+                  :aria-label="'移除' + item.name"
+                  @click.stop="removeDish(item)"
+                >×</button>
+                <span v-else class="sc-del-placeholder"></span>
+              </article>
             </div>
           </div>
           <div class="sc-summary">
@@ -215,11 +306,15 @@ onMounted(loadMenu)
 
       <footer class="cart-bar">
         <button class="cart-basket" :class="{ 'cart-basket-on': state.cart.itemCount }" @click="openCart" aria-label="打开购物车">
-          <span class="cart-basket-icon">🧺</span><span v-if="state.cart.itemCount" class="cart-basket-badge">{{ state.cart.itemCount }}</span>
+          <svg class="cart-basket-icon" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M5.5 8h13l-1.1 11.2a1.4 1.4 0 0 1-1.4 1.3H8a1.4 1.4 0 0 1-1.4-1.3L5.5 8Z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" />
+            <path d="M9 8V6.6a3 3 0 0 1 6 0V8" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+          </svg>
+          <span v-if="state.cart.itemCount" class="cart-basket-badge">{{ state.cart.itemCount }}</span>
         </button>
         <div class="cart-info">
           <strong class="cart-total" :class="{ 'cart-total-zero': !state.cart.itemCount }">¥{{ state.cart.total.toFixed(2) }}</strong>
-          <span class="cart-count">已选 {{ state.cart.itemCount }} 件</span>
+          <span class="cart-count">全桌 {{ state.cart.itemCount }} 件</span>
         </div>
         <button class="checkout-btn" :class="{ 'checkout-active': state.cart.itemCount }" :disabled="!state.cart.itemCount" @click="openCart">去结算</button>
       </footer>
