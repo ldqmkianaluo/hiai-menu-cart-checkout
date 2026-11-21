@@ -15,7 +15,7 @@ RUN mvn -B -ntp -q -f backend/pom.xml -DskipTests package
 
 FROM eclipse-temurin:17-jre
 WORKDIR /app
-COPY --from=api /app/backend/target/*.jar app.jar
+COPY --from=api /app/build/backend/hiai-menu-cart-checkout-1.0.0.jar /app/app.jar
 ENV PORT=8080
 EXPOSE 8080
 ENTRYPOINT ["sh", "-c", "java -jar /app/app.jar --server.port=${PORT}"]
