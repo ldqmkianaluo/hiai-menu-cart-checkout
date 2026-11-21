@@ -7,6 +7,23 @@
  *   $env:MOCK_PORT=8081; node mock-server.mjs
  */
 import { createServer } from 'node:http'
+import fs from 'node:fs'
+import { fileURLToPath } from 'node:url'
+
+// 允许把 AI_API_KEY 放进 frontend/.env.local（已在 .gitignore 里），不必写进命令行历史。
+if (!process.env.AI_API_KEY) {
+  try {
+    const envPath = fileURLToPath(new URL('./.env.local', import.meta.url))
+    if (fs.existsSync(envPath)) {
+      for (const line of fs.readFileSync(envPath, 'utf8').split(/\r?\n/)) {
+        const match = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.+?)\s*$/)
+        if (match && !process.env[match[1]]) process.env[match[1]] = match[2].replace(/^["']|["']$/g, '')
+      }
+    }
+  } catch {
+    // 读不到就算了，退回规则引擎
+  }
+}
 
 const PORT = Number(process.env.MOCK_PORT || 8080)
 const DELAY = Number(process.env.MOCK_DELAY || 0)
@@ -228,6 +245,162 @@ function createReservation(body) {
   return reservation
 }
 
+function listReservations(phone) {
+  const query = String(phone || '').trim()
+  if (!/^1\d{10}$/.test(query)) throw new BadRequest('请填 11 位手机号再查询')
+  return [...reservations.values()]
+    .filter(item => item.phone === query)
+    .sort((a, b) => `${a.date} ${a.time}`.localeCompare(`${b.date} ${b.time}`))
+}
+
+// ===== 服务员助手：有 AI_API_KEY 走 DeepSeek，没有就退回规则引擎 =====
+const AI_ENDPOINT = process.env.AI_ENDPOINT || 'https://api.deepseek.com/chat/completions'
+const AI_MODEL = process.env.AI_MODEL || 'deepseek-chat'
+const AI_KEY = process.env.AI_API_KEY || ''
+
+const AI_SYSTEM_PROMPT = `你是「朱家大院」这家餐厅的点餐服务员，只做一件事：根据客人的需求推荐菜品，并给出简短理由。
+
+菜单（只能从这里选）：
+dish-001 院子红烧肉 ¥38 招牌 荤菜
+dish-002 砂锅鲜鱼头 ¥58 人气 鱼 微辣
+dish-003 小炒黄牛肉 ¥42 辣 下饭
+dish-004 清炒时蔬 ¥18 清爽少油
+dish-005 农家炒饭 ¥16 主食
+dish-006 手工汤面 ¥20 主食 带汤
+dish-007 桂花酸梅汤 ¥9 饮品 解辣
+dish-008 山泉乌龙茶 ¥8 饮品 无糖
+
+规则：
+1. 只输出 JSON，不要 markdown 代码块，不要解释；
+2. 结构：{"reply":"给客人看的一句话","people":人数,"items":[{"dishId":"dish-001","quantity":2,"reason":"不超过 20 字的理由"}]}
+3. items 1–6 项，quantity 1–9，必须包含足够吃饱的主食，荤素搭配；
+4. 如果客人给了预算，总价必须不超过预算；超了就少点菜，宁可少一道也别超；
+5. reply 用中文口语，不超过 60 字，不要提模型、不要提规则；
+6. reply 里不要出现任何金额数字（总价由系统展示），也不要承诺折扣、优惠、免单；
+7. 客人没提人数时按 2 人算；客人没提预算时按正常点法。`
+
+function parseAiJson(content) {
+  const text = String(content || '').replace(/```json/gi, '').replace(/```/g, '').trim()
+  const start = text.indexOf('{')
+  const end = text.lastIndexOf('}')
+  if (start < 0 || end <= start) throw new Error('AI 返回的不是 JSON')
+  return JSON.parse(text.slice(start, end + 1))
+}
+
+async function callDeepSeek(messages) {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), 20000)
+  try {
+    const response = await fetch(AI_ENDPOINT, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${AI_KEY}` },
+      body: JSON.stringify({
+        model: AI_MODEL,
+        messages: [{ role: 'system', content: AI_SYSTEM_PROMPT }, ...messages],
+        temperature: 0.6,
+        max_tokens: 700,
+        response_format: { type: 'json_object' },
+      }),
+      signal: controller.signal,
+    })
+    if (!response.ok) {
+      const detail = (await response.text()).slice(0, 200)
+      throw new Error(`DeepSeek ${response.status} ${detail}`)
+    }
+    const data = await response.json()
+    return parseAiJson(data.choices?.[0]?.message?.content)
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+function buildAiResult(payload, budget = 0) {
+  const items = []
+  const seen = new Set()
+  for (const raw of Array.isArray(payload.items) ? payload.items : []) {
+    const dish = DISH_BY_ID.get(String(raw?.dishId || ''))
+    if (!dish || seen.has(dish.id)) continue
+    const quantity = Math.max(1, Math.min(9, Math.trunc(Number(raw?.quantity) || 1)))
+    seen.add(dish.id)
+    items.push({
+      dishId: dish.id,
+      name: dish.name,
+      price: dish.price,
+      quantity,
+      lineTotal: round(dish.price * quantity),
+      reason: String(raw?.reason || '').trim().slice(0, 40) || '按你的口味挑的',
+      artColor: dish.artColor,
+    })
+    if (items.length >= 6) break
+  }
+  if (!items.length) throw new Error('AI 没有给出可用菜品')
+
+  // 模型可能无视预算，这里再兜一次：先砍饮品，再砍最贵的一份，直到不超。
+  let guard = 0
+  const totalNow = () => round(items.reduce((sum, item) => sum + item.lineTotal, 0))
+  while (budget > 0 && totalNow() > budget && items.length > 1 && guard < 8) {
+    const drinkIndex = items.findIndex(item => item.dishId === 'dish-007' || item.dishId === 'dish-008')
+    if (drinkIndex >= 0) {
+      items.splice(drinkIndex, 1)
+    } else {
+      const biggest = items.reduce((best, item) => (item.lineTotal > best.lineTotal ? item : best), items[0])
+      if (biggest.quantity > 1) {
+        biggest.quantity -= 1
+        biggest.lineTotal = round(biggest.price * biggest.quantity)
+      } else {
+        items.splice(items.indexOf(biggest), 1)
+      }
+    }
+    guard += 1
+  }
+
+  const total = round(items.reduce((sum, item) => sum + item.lineTotal, 0))
+  return {
+    engine: 'llm',
+    reply: String(payload.reply || '').trim().slice(0, 120) || '按你的需求配了这几样。',
+    items,
+    total,
+    withinBudget: budget === 0 || total <= budget,
+    disclaimer: 'DeepSeek 在线生成 · 价格与合计由后端重算，不会采用模型给的钱数',
+  }
+}
+
+async function agentChat(body) {
+  const rawMessages = Array.isArray(body.messages) ? body.messages : []
+  const messages = rawMessages
+    .filter(item => item && (item.role === 'user' || item.role === 'assistant') && typeof item.content === 'string')
+    .slice(-8)
+    .map(item => ({ role: item.role, content: item.content.slice(0, 300) }))
+  const lastUser = [...messages].reverse().find(item => item.role === 'user')?.content || ''
+
+  if (!AI_KEY) return fallbackToRules(lastUser, body)
+  try {
+    const parsed = await callDeepSeek(messages)
+    return buildAiResult(parsed, Number(body.budget) || 0)
+  } catch (error) {
+    console.log(`  agent fallback: ${error.message}`)
+    const result = fallbackToRules(lastUser, body)
+    result.note = `AI 调用失败，已退回规则推荐：${error.message.slice(0, 60)}`
+    return result
+  }
+}
+
+function fallbackToRules(demand, body) {
+  const rules = agentRecommend({
+    demand,
+    partySize: Number(body.partySize) || 2,
+    budget: Number(body.budget) || 0,
+  })
+  return {
+    engine: 'rules',
+    reply: rules.reply,
+    items: rules.items,
+    total: rules.total,
+    withinBudget: rules.withinBudget,
+    disclaimer: '规则推荐 · 离线演示，未调用大模型',
+  }
+}
+
 // ===== 推广活动：抽奖发券 =====
 const PRIZES = [
   { id: 'free', name: '整单免单', short: '免单', weight: 1, type: 'free', value: 0, detail: '本单全免（演示用，不涉及真实收款）' },
@@ -239,14 +412,39 @@ const PRIZES = [
 ]
 const PRIZE_WEIGHT = PRIZES.reduce((sum, prize) => sum + prize.weight, 0)
 
+// 同桌人数阶梯：人越多基础折扣越高，封顶 8%，超过 5 人不再增加
+const TABLE_TIERS = [
+  { min: 5, rate: 8, label: '5 人及以上 8%' },
+  { min: 4, rate: 5, label: '4 人 5%' },
+  { min: 3, rate: 3, label: '3 人 3%' },
+  { min: 1, rate: 0, label: '2 人及以下无拼桌折扣' },
+]
+const DRAW_BASE = 3      // 每人基础抽奖次数
+const DRAW_BONUS_MAX = 2 // 拉人最多再送 2 次
+const FLOOR_RATE = 0.6   // 实付不低于小计的 60%，写进规则页，避免券叠加失控
+
+function tableTier(memberCount) {
+  return TABLE_TIERS.find(tier => memberCount >= tier.min) || TABLE_TIERS[TABLE_TIERS.length - 1]
+}
+
+function drawQuota(tableCode, memberId) {
+  const cart = cartView(tableCode)
+  const memberCount = Math.max(1, cart.members.length)
+  const bonus = Math.min(DRAW_BONUS_MAX, Math.max(0, memberCount - 1))
+  const used = draws.get(`${tableCode}/${memberId}`) || 0
+  return { total: DRAW_BASE + bonus, used, remaining: Math.max(0, DRAW_BASE + bonus - used), memberCount }
+}
+
 const coupons = new Map()   // code -> 券
 const draws = new Map()     // `table/member` -> 已抽次数
 
 function drawPrize(tableCode, memberId) {
   const key = `${tableCode}/${memberId}`
-  const used = draws.get(key) || 0
-  if (used >= 3) throw new BadRequest('这桌已经抽过 3 次了，留给同事试试运气')
-  draws.set(key, used + 1)
+  const quota = drawQuota(tableCode, memberId)
+  if (quota.remaining <= 0) {
+    throw new BadRequest(`你在这桌已经抽满 ${quota.total} 次了，再多叫一位同事同桌还能多抽一次`)
+  }
+  draws.set(key, quota.used + 1)
 
   let ticket = Math.random() * PRIZE_WEIGHT
   let prize = PRIZES[PRIZES.length - 1]
@@ -274,7 +472,7 @@ function drawPrize(tableCode, memberId) {
     }
     coupons.set(code, coupon)
   }
-  return { prize, coupon, remaining: Math.max(0, 3 - (used + 1)) }
+  return { prize, coupon, remaining: Math.max(0, quota.total - (quota.used + 1)), quota: quota.total, memberCount: quota.memberCount }
 }
 
 function discountOf(coupon, subtotal) {
@@ -291,8 +489,14 @@ function preview(tableCode, dishIds, couponCode) {
   const picked = dishIds?.length ? cart.items.filter(item => dishIds.includes(item.dishId)) : cart.items
   if (!picked.length) throw new BadRequest('购物车为空，暂时无法生成结算预览')
   const subtotal = round(picked.reduce((sum, item) => sum + item.lineTotal, 0))
+  const tier = tableTier(Math.max(1, cart.members.length))
+  const baseDiscount = round(subtotal * tier.rate / 100)
+  const afterBase = round(subtotal - baseDiscount)
   const coupon = couponCode ? coupons.get(couponCode) || null : null
-  const discount = round(discountOf(coupon, subtotal))
+  const couponDiscount = round(discountOf(coupon, afterBase))
+  const floor = round(subtotal * FLOOR_RATE)
+  const capped = Math.max(floor, round(afterBase - couponDiscount))
+  const discount = round(subtotal - capped)
   const suffix = tableCode.replace(/[^A-Za-z0-9]/g, '').slice(-6).toUpperCase()
   return {
     previewNo: `DEMO-${suffix}-${Math.floor(Date.now() / 1000)}`,
@@ -300,12 +504,19 @@ function preview(tableCode, dishIds, couponCode) {
     itemCount: picked.reduce((sum, item) => sum + item.quantity, 0),
     subtotal,
     total: subtotal,
+    memberCount: Math.max(1, cart.members.length),
+    baseRate: tier.rate,
+    baseDiscount,
+    baseLabel: tier.label,
+    couponDiscount,
     discount,
-    payTotal: round(subtotal - discount),
+    floorApplied: capped === floor && afterBase - couponDiscount < floor,
+    floor,
+    payTotal: capped,
     coupon: coupon && discount > 0
       ? { code: coupon.code, name: coupon.name, detail: coupon.type === 'threshold' ? `满 ${coupon.threshold} 元减 ${coupon.value} 元` : coupon.name }
       : null,
-    couponNote: coupon && discount === 0 ? '这张券本单不可用（金额未达门槛或已过期）' : '',
+    couponNote: coupon && couponDiscount === 0 ? '这张券本单不可用（金额未达门槛或已过期）' : '',
     paymentMethods: [
       { code: 'wechat_demo', label: '微信支付', description: '仅展示，不会唤起微信支付', icon: '微' },
       { code: 'counter_demo', label: '到店付款', description: '仅展示，不会创建收款任务', icon: '店' },
@@ -360,7 +571,12 @@ const server = createServer(async (request, response) => {
 
   try {
     if (request.method === 'GET' && path === '/api/demo/health') {
-      return send(response, 200, { status: 'UP', mode: 'DEMO_ONLY', paymentEnabled: false })
+      return send(response, 200, {
+        status: 'UP',
+        mode: 'DEMO_ONLY',
+        paymentEnabled: false,
+        agent: { engine: AI_KEY ? 'llm' : 'rules', model: AI_KEY ? AI_MODEL : 'rule-engine' },
+      })
     }
     if (request.method === 'GET' && path === '/api/demo/menu') {
       return send(response, 200, { store: STORE, categories: CATEGORIES, dishes: DISHES })
@@ -391,6 +607,18 @@ const server = createServer(async (request, response) => {
       console.log(`  POST agent/recommend "${String(body.demand || '').slice(0, 20)}" -> ¥${result.total}`)
       return send(response, 200, result)
     }
+    if (request.method === 'POST' && path === '/api/demo/agent/chat') {
+      const body = await readJson(request)
+      const result = await agentChat(body)
+      console.log(`  POST agent/chat [${result.engine}] "${String(body.messages?.at(-1)?.content || '').slice(0, 18)}" -> ¥${result.total}`)
+      return send(response, 200, result)
+    }
+    if (request.method === 'GET' && path === '/api/demo/reservations') {
+      const url = new URL(request.url, `http://${request.headers.host || 'localhost'}`)
+      const list = listReservations(url.searchParams.get('phone'))
+      console.log(`  GET reservations phone=${url.searchParams.get('phone')} -> ${list.length}`)
+      return send(response, 200, list)
+    }
     if (request.method === 'POST' && path === '/api/demo/reservations') {
       const body = await readJson(request)
       const reservation = createReservation(body)
@@ -402,6 +630,19 @@ const server = createServer(async (request, response) => {
       const reservation = reservations.get(code)
       if (!reservation) throw new BadRequest('没有找到这个预约号')
       return send(response, 200, reservation)
+    }
+    if (request.method === 'GET' && path === '/api/demo/promo/status') {
+      const url = new URL(request.url, `http://${request.headers.host || 'localhost'}`)
+      const table = resolveTable(url.searchParams.get('table'), url.searchParams.get('sessionId'))
+      const member = requireMember(url.searchParams.get('member'))
+      const quota = drawQuota(table, member)
+      const tier = tableTier(quota.memberCount)
+      return send(response, 200, {
+        ...quota,
+        baseRate: tier.rate,
+        baseLabel: tier.label,
+        prizes: PRIZES.map(({ id, name, short, detail }) => ({ id, name, short, detail })),
+      })
     }
     if (request.method === 'POST' && path === '/api/demo/promo/draw') {
       const body = await readJson(request)

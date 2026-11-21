@@ -25,7 +25,7 @@ class DemoPromoService {
 
     record CouponView(String code, String name, String detail) {}
 
-    record DrawResult(Prize prize, CouponView coupon, int remaining) {}
+    record DrawResult(Prize prize, CouponView coupon, int remaining, int quota, int memberCount, int baseRate) {}
 
     private static final List<Prize> PRIZES = List.of(
             new Prize("free", "整单免单", "免单", 1, Kind.FREE, 0, 0, "本单全免（演示用，不涉及真实收款）"),
@@ -41,11 +41,32 @@ class DemoPromoService {
     private final Map<String, Integer> draws = new ConcurrentHashMap<>();
     private final Map<String, Coupon> coupons = new ConcurrentHashMap<>();
 
-    DrawResult draw(String table, String member) {
+    /** 同桌人数阶梯：人越多基础折扣越高，封顶 8%。 */
+    static int baseRate(int memberCount) {
+        if (memberCount >= 5) {
+            return 8;
+        }
+        if (memberCount >= 4) {
+            return 5;
+        }
+        if (memberCount >= 3) {
+            return 3;
+        }
+        return 0;
+    }
+
+    /** 每人基础 3 次，同桌每多 1 人 +1 次，最多 +2 次。 */
+    static int quotaOf(int memberCount) {
+        int bonus = Math.min(2, Math.max(0, memberCount - 1));
+        return MAX_DRAWS_PER_MEMBER + bonus;
+    }
+
+    DrawResult draw(String table, String member, int memberCount) {
         String key = table + "/" + member;
+        int quota = quotaOf(memberCount);
         int used = draws.getOrDefault(key, 0);
-        if (used >= MAX_DRAWS_PER_MEMBER) {
-            throw new IllegalArgumentException("这桌已经抽过 3 次了，留给同事试试运气");
+        if (used >= quota) {
+            throw new IllegalArgumentException("你在这桌已经抽满 " + quota + " 次了，再多叫一位同事同桌还能多抽一次");
         }
         draws.put(key, used + 1);
 
@@ -54,8 +75,16 @@ class DemoPromoService {
         if (prize.kind() != Kind.NONE) {
             coupon = issue(table, member, prize);
         }
-        int remaining = Math.max(0, MAX_DRAWS_PER_MEMBER - (used + 1));
-        return new DrawResult(prize, view(coupon), remaining);
+        int remaining = Math.max(0, quota - (used + 1));
+        return new DrawResult(prize, view(coupon), remaining, quota, memberCount, baseRate(memberCount));
+    }
+
+    DrawResult draw(String table, String member) {
+        return draw(table, member, 1);
+    }
+
+    int usedOf(String table, String member) {
+        return draws.getOrDefault(table + "/" + member, 0);
     }
 
     BigDecimal discountOf(String code, BigDecimal subtotal) {

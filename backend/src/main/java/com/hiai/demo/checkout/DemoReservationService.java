@@ -5,10 +5,12 @@ import org.springframework.stereotype.Service;
 import java.time.LocalDate;
 import java.time.OffsetDateTime;
 import java.time.format.DateTimeParseException;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ThreadLocalRandom;
+import java.util.stream.Collectors;
 
 /** 演示用预约：座位与时段都不真实占用，只返回一个可查询的单号。 */
 @Service
@@ -66,6 +68,18 @@ class DemoReservationService {
             throw new IllegalArgumentException("没有找到这个预约号");
         }
         return reservation;
+    }
+
+    /** 我的预约：按手机号倒序列出，演示环境不做鉴权。 */
+    List<Reservation> listByPhone(String phone) {
+        String cleanPhone = trim(phone).replaceAll("\\D", "");
+        if (cleanPhone.length() != 11) {
+            throw new IllegalArgumentException("请填 11 位手机号再查询");
+        }
+        return store.values().stream()
+                .filter(reservation -> cleanPhone.equals(reservation.phone()))
+                .sorted(Comparator.comparing(Reservation::createdAt).reversed())
+                .collect(Collectors.toList());
     }
 
     private static String trim(String value) {

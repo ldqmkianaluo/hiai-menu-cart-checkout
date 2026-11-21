@@ -45,11 +45,17 @@ export const api = {
     method: 'POST',
     body: JSON.stringify({ table, dishIds, couponCode }),
   }),
+  promoStatus: (table, member) => request(`/api/demo/promo/status?table=${encodeURIComponent(table)}&member=${encodeURIComponent(member)}`),
   drawPromo: (table, member) => request('/api/demo/promo/draw', {
     method: 'POST',
     body: JSON.stringify({ table, member }),
   }),
   createReservation: payload => request('/api/demo/reservations', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  }),  reservations: phone => request(`/api/demo/reservations?phone=${encodeURIComponent(phone)}`),
+
+  agentChat: payload => request('/api/demo/agent/chat', {
     method: 'POST',
     body: JSON.stringify(payload),
   }),

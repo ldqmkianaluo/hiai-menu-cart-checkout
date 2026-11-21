@@ -1,5 +1,5 @@
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { api } from '../api.js'
 import { useCart } from '../cart.js'
@@ -23,6 +23,9 @@ const spinning = ref(false)
 const prize = ref(null)
 const coupon = ref(null)
 const remaining = ref(3)
+const quota = ref(3)
+const memberCount = ref(1)
+const baseRate = ref(0)
 const error = ref('')
 const done = ref(false)
 
@@ -35,6 +38,18 @@ function pickRotation(prizeId) {
   return base + 360 * 4 + target
 }
 
+onMounted(async () => {
+  try {
+    const status = await api.promoStatus(state.table, state.memberId)
+    quota.value = status.total
+    remaining.value = status.remaining ?? status.total
+    memberCount.value = status.memberCount
+    baseRate.value = status.baseRate
+  } catch (_) {
+    // 查不到配额就按默认显示，抽奖时服务端还会再校验一次
+  }
+})
+
 async function draw() {
   if (spinning.value || remaining.value <= 0) return
   spinning.value = true
@@ -44,6 +59,8 @@ async function draw() {
     const result = await api.drawPromo(state.table, state.memberId)
     prize.value = result.prize
     remaining.value = result.remaining
+    if (result.quota) quota.value = result.quota
+    if (result.memberCount) memberCount.value = result.memberCount
     rotation.value = pickRotation(result.prize.id)
     setTimeout(() => {
       spinning.value = false
@@ -133,8 +150,12 @@ function goCheckout() {
         {{ remaining > 0 ? (spinning ? '转动中…' : `开始抽奖（剩 ${remaining} 次）`) : '本轮次数已用完' }}
       </button>
 
+      <p class="lucky-meta">
+        当前同桌 {{ memberCount }} 人 · 结算拼桌折扣 {{ baseRate }}% · 本轮还剩 {{ remaining }}/{{ quota }} 次
+      </p>
+
       <p class="lucky-note">
-        演示活动：奖品与券只在内存里，不涉及真实兑奖、收款或营销合规。同一桌每位用餐人各 3 次。
+        演示活动：奖品与券只在内存里，不涉及真实兑奖、收款或营销合规。每人基础 3 次，同桌每多 1 人再 +1 次（最多 5 次）。
         <span v-if="couponSaved">这张券已保存，结算页会自动带上。</span>
       </p>
     </div>

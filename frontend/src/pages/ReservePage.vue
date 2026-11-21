@@ -28,6 +28,28 @@ const submitting = ref(false)
 const error = ref('')
 const reservation = ref(null)
 
+const mine = ref([])
+const mineError = ref('')
+const mineLoading = ref(false)
+
+async function loadMine() {
+  mineError.value = ''
+  if (!/^1\d{10}$/.test(form.phone.trim())) {
+    mineError.value = '先在上面填 11 位手机号，才能查到你自己的预约'
+    mine.value = []
+    return
+  }
+  mineLoading.value = true
+  try {
+    mine.value = await api.reservations(form.phone.trim())
+    if (!mine.value.length) mineError.value = '这个手机号还没有预约记录'
+  } catch (queryError) {
+    mineError.value = queryError.message
+  } finally {
+    mineLoading.value = false
+  }
+}
+
 const canSubmit = computed(() => form.name.trim().length > 0 && /^1\d{10}$/.test(form.phone.trim()))
 
 async function submit() {
@@ -143,6 +165,24 @@ function reset() {
         </button>
 
         <p class="reserve-note">演示预约不涉及真实座位、短信或押金；单号只存在内存里，服务重启即失效。</p>
+
+        <section class="mine-block">
+          <div class="mine-head">
+            <strong>我的预约</strong>
+            <button type="button" class="mine-query" :disabled="mineLoading" @click="loadMine">
+              {{ mineLoading ? '查询中…' : '用上面的手机号查' }}
+            </button>
+          </div>
+          <p v-if="mineError" class="mine-error">{{ mineError }}</p>
+          <ul v-if="mine.length" class="mine-list">
+            <li v-for="item in mine" :key="item.code" class="mine-item">
+              <span class="mine-code">{{ item.code }}</span>
+              <span class="mine-when">{{ item.date }} {{ item.time }} · {{ item.partySize }} 位</span>
+              <span class="mine-who">{{ item.name }}</span>
+            </li>
+          </ul>
+          <p v-if="mine.length" class="mine-tip">到店报预约号即可核对，演示环境不会发短信。</p>
+        </section>
       </template>
     </div>
   </div>

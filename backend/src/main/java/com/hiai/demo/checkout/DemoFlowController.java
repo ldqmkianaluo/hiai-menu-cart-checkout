@@ -5,6 +5,7 @@ import jakarta.validation.Valid;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
 import org.springframework.http.HttpStatus;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.MethodArgumentNotValidException;
@@ -82,23 +83,36 @@ class DemoFlowController {
         java.math.BigDecimal subtotal = selectedItems.stream()
                 .map(DemoCartService.CartLine::lineTotal)
                 .reduce(java.math.BigDecimal.ZERO, java.math.BigDecimal::add);
-        java.math.BigDecimal discount = promos.discountOf(command.couponCode(), subtotal);
-        java.math.BigDecimal payTotal = subtotal.subtract(discount).max(java.math.BigDecimal.ZERO);
+        int memberCount = Math.max(1, cart.members().size());
+        int baseRate = DemoPromoService.baseRate(memberCount);
+        java.math.BigDecimal baseDiscount = subtotal
+                .multiply(java.math.BigDecimal.valueOf(baseRate))
+                .divide(java.math.BigDecimal.valueOf(100), 2, java.math.RoundingMode.HALF_UP);
+        java.math.BigDecimal afterBase = subtotal.subtract(baseDiscount);
+        java.math.BigDecimal couponDiscount = promos.discountOf(command.couponCode(), afterBase);
+        java.math.BigDecimal floor = subtotal
+                .multiply(java.math.BigDecimal.valueOf(60))
+                .divide(java.math.BigDecimal.valueOf(100), 2, java.math.RoundingMode.HALF_UP);
+        java.math.BigDecimal discounted = afterBase.subtract(couponDiscount);
+        java.math.BigDecimal payTotal = discounted.max(floor);
+        boolean floorApplied = discounted.compareTo(floor) < 0;
+        java.math.BigDecimal discount = subtotal.subtract(payTotal);
         String couponNote = "";
         DemoPromoService.CouponView coupon = promos.view(command.couponCode());
         if (coupon == null && command.couponCode() != null && !command.couponCode().isBlank()) {
             couponNote = "这张券本单不可用（已过期或金额未达门槛）";
-        } else if (coupon != null && discount.compareTo(java.math.BigDecimal.ZERO) == 0) {
+        } else if (coupon != null && couponDiscount.compareTo(java.math.BigDecimal.ZERO) == 0) {
             couponNote = "这张券本单不可用（金额未达门槛）";
-        } else if (coupon != null && discount.compareTo(java.math.BigDecimal.ZERO) > 0) {
+        } else if (coupon != null && couponDiscount.compareTo(java.math.BigDecimal.ZERO) > 0) {
             couponNote = "已使用「" + coupon.name() + "」";
         }
         String suffix = table.replaceAll("[^A-Za-z0-9]", "");
         suffix = suffix.substring(Math.max(0, suffix.length() - 6));
         return new CheckoutPreview(
                 "DEMO-" + suffix.toUpperCase() + "-" + Instant.now().getEpochSecond(),
-                selectedItems, selectedCount, subtotal, subtotal, discount, payTotal,
-                discount.compareTo(java.math.BigDecimal.ZERO) > 0 ? coupon : null, couponNote,
+                selectedItems, selectedCount, subtotal, subtotal, memberCount, baseRate, baseDiscount,
+                couponDiscount, discount, floorApplied, floor, payTotal,
+                couponDiscount.compareTo(java.math.BigDecimal.ZERO) > 0 ? coupon : null, couponNote,
                 List.of(
                         new PaymentMethod("wechat_demo", "微信支付", "仅展示，不会唤起微信支付", "微"),
                         new PaymentMethod("counter_demo", "到店付款", "仅展示，不会创建收款任务", "店")
@@ -109,7 +123,29 @@ class DemoFlowController {
 
     @PostMapping("/promo/draw")
     DemoPromoService.DrawResult drawPrize(@Valid @RequestBody DrawCommand command) {
-        return promos.draw(resolveTable(command.table(), command.sessionId()), command.member());
+        String table = resolveTable(command.table(), command.sessionId());
+        int memberCount = Math.max(1, carts.get(table, null).members().size());
+        return promos.draw(table, command.member(), memberCount);
+    }
+
+    /** 抽奖配额与当前折扣规则，前端首页/抽奖页用来显示「还剩几次」。 */
+    @GetMapping("/promo/status")
+    Map<String, Object> promoStatus(@RequestParam(name = "table", required = false) String table,
+                                    @RequestParam(name = "sessionId", required = false) String sessionId,
+                                    @RequestParam(name = "member") String member) {
+        String resolved = resolveTable(table, sessionId);
+        int memberCount = Math.max(1, carts.get(resolved, null).members().size());
+        int quota = DemoPromoService.quotaOf(memberCount);
+        int used = promos.usedOf(resolved, member);
+        return Map.of(
+                "memberCount", memberCount,
+                "total", quota,
+                "used", used,
+                "remaining", Math.max(0, quota - used),
+                "baseRate", DemoPromoService.baseRate(memberCount),
+                "baseLabel", DemoPromoService.baseRate(memberCount) + "% 拼桌折扣",
+                "prizes", java.util.List.of()
+        );
     }
 
     @PostMapping("/reservations")
@@ -123,9 +159,22 @@ class DemoFlowController {
         return reservations.find(code);
     }
 
+    /** 我的预约：按手机号查，演示环境只按手机号过滤内存里的单子。 */
+    @GetMapping("/reservations")
+    List<DemoReservationService.Reservation> myReservations(
+            @RequestParam(name = "phone") String phone) {
+        return reservations.listByPhone(phone);
+    }
+
     @PostMapping("/agent/recommend")
     DemoAgentService.Recommendation recommend(@Valid @RequestBody AgentCommand command) {
         return agent.recommend(command.demand(), command.partySize(), command.budget());
+    }
+
+    /** 服务员助手对话：有 AI_API_KEY 走 DeepSeek，没有就规则兜底。 */
+    @PostMapping("/agent/chat")
+    DemoAgentService.ChatReply chat(@Valid @RequestBody ChatCommand command) {
+        return agent.chat(command.messages(), command.partySize(), command.budget());
     }
 
     /** 兼容旧调用：以前只有一个 sessionId 字段，现在优先用桌号，没有就退回 sessionId。 */
@@ -172,10 +221,15 @@ class DemoFlowController {
                           @Max(value = 12, message = "人数请填 1–12 位") int partySize,
                           String note, String table) {}
     record AgentCommand(@NotBlank(message = "请说一下想吃什么") String demand, int partySize, int budget) {}
+
+    record ChatCommand(@NotNull(message = "对话内容不能为空") List<DemoAgentService.ChatMessage> messages,
+                       int partySize, int budget) {}
     record PaymentMethod(String code, String label, String description, String icon) {}
     record CheckoutPreview(String previewNo, List<DemoCartService.CartLine> items, int itemCount,
-                           java.math.BigDecimal subtotal, java.math.BigDecimal total,
-                           java.math.BigDecimal discount, java.math.BigDecimal payTotal,
+                           java.math.BigDecimal subtotal, java.math.BigDecimal total, int memberCount,
+                           int baseRate, java.math.BigDecimal baseDiscount, java.math.BigDecimal couponDiscount,
+                           java.math.BigDecimal discount, boolean floorApplied, java.math.BigDecimal floor,
+                           java.math.BigDecimal payTotal,
                            DemoPromoService.CouponView coupon, String couponNote,
                            List<PaymentMethod> paymentMethods, boolean demoOnly) {}
     record ErrorView(String message) {}
