@@ -61,7 +61,8 @@ class DemoCartService {
 
     CartView setQuantity(String tableCode, String memberId, String memberName, String dishId, int quantity) {
         validateTable(tableCode);
-        validateMember(memberId);
+        String owner = memberId == null || memberId.isBlank() ? "guest" : memberId.trim();
+        validateMember(owner);
         if (!DemoCatalog.DISH_BY_ID.containsKey(dishId)) {
             throw new IllegalArgumentException("菜品不存在或已下架");
         }
@@ -69,19 +70,19 @@ class DemoCartService {
             throw new IllegalArgumentException("菜品数量必须在 0 到 99 之间");
         }
         Map<String, MemberCart> members = tables.computeIfAbsent(tableCode, ignored -> new ConcurrentHashMap<>());
-        MemberCart member = members.computeIfAbsent(memberId, ignored -> new MemberCart(defaultName(memberName, memberId)));
+        MemberCart member = members.computeIfAbsent(owner, ignored -> new MemberCart(defaultName(memberName, owner)));
         if (quantity == 0) {
             member.lines.remove(dishId);
         } else {
             member.lines.put(dishId, quantity);
         }
         if (member.lines.isEmpty()) {
-            members.remove(memberId);
+            members.remove(owner);
         }
         if (members.isEmpty()) {
             tables.remove(tableCode);
         }
-        return get(tableCode, memberId);
+        return get(tableCode, owner);
     }
 
     private static String defaultName(String memberName, String memberId) {

@@ -37,4 +37,5 @@ jobs:
           distribution: temurin
           java-version: '17'
           cache: maven
+      - run: mkdir -p ../frontend/dist
       - run: mvn -B -ntp verify
